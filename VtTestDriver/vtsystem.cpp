@@ -1,7 +1,9 @@
 #include "stdafx.h"
 #include "vtasm.h"
 #include "exithandler.h"
+
 VMX_CPU g_VMXCPU;
+ULONG ExitEip;
 
 BOOLEAN IsVTEnabled()
 {
@@ -67,6 +69,9 @@ static ULONG VMxAdjustControls(ULONG Ctl,ULONG Msr)
 	return Ctl;
 }
 // 客户机 VM 执行的咧程
+extern ULONG g_RetDriver_Esp;
+extern ULONG g_RetDriver_Eip;// DriverEntry中的保存的VT 返回位置 esp、eip
+
 // MUST BE NAKED!!!
 void _declspec(naked) GuestEntry(void)
 {
@@ -85,13 +90,15 @@ void _declspec(naked) GuestEntry(void)
 
 		mov ax, ss
 		mov ss, ax
-
-		//int 3;   WARNING!!!  HERE  CAN'T USE INT3!!
 	}
-	Vmx_VmCall();
+	// 直接将 VT_Guest 执行流给DriverEntry继续执行；★？
+	// 这个时候, 整个系统都被 VT 了？？ 
 	__asm{
-		//jmp g_exit
+		mov esp,g_RetDriver_Esp;
+		jmp g_RetDriver_Eip;
 	}
+
+		
 }
 
 void SetupVMCS()
@@ -225,7 +232,7 @@ NTSTATUS StartVirtualTechnology()
 	// 1.2 on cr4.[VMXE]  -- lock bit on
 	*((PULONG)&uCr4) = Asm_GetCr4();//get cr4；
 	uCr4.VMXE =1;// VMXE =1 enable
-	Asm_SetCr4(*(PULONG)&uCr4); // set
+	Asm_SetCr4(*(PULONG)&uCr4); // set cr4 value..
 	// 1.3 Allocate VMXONRegion. And do Prepare in needed
 	g_VMXCPU.pVMXONRegion = ExAllocatePoolWithTag(NonPagedPool,0x1000,'vmx');// para@3 is digit value
 	RtlZeroMemory(g_VMXCPU.pVMXONRegion,0x1000);// initial memory
@@ -265,24 +272,48 @@ NTSTATUS StartVirtualTechnology()
 	// -- init VMCS 
 	SetupVMCS();
 	//-- VM  Launch（） -------**;
+	g_VMXCPU.bVTStartSuccess = TRUE;
 	Vmx_VmLaunch();
 	//-------------- if VM runs right , here is never execute!
-	//g_VMXCPU.bVTStartSuccess = FALSE;
+	g_VMXCPU.bVTStartSuccess = FALSE;
 	ULONG X = Vmx_VmRead(VM_INSTRUCTION_ERROR);
 	DbgPrint("ERROR:%x",X);
 	__asm int 3;
-	 Log("ERROR:VmLaunch指令调用失败!!!!", Vmx_VmRead(VM_INSTRUCTION_ERROR))
+	Log("ERROR:VmLaunch指令调用失败!!!!", Vmx_VmRead(VM_INSTRUCTION_ERROR));
+	
 	StopVirtualTechnology();
 
 
 	return STATUS_SUCCESS;
 }
+ULONG g_VmCall_Arg;
+ULONG g_Stop_Esp,g_Stop_Eip;
 
 NTSTATUS StopVirtualTechnology()
 {
 	_CR4 uCr4;
 	// ** VMXOff;
-	//Vmx_VmxOff();
+	if(g_VMXCPU.bVTStartSuccess)
+	{
+		g_VmCall_Arg = 'SVT';
+		__asm
+		{
+			pushad;
+			pushfd;
+			mov g_Stop_Esp,esp;
+			mov g_Stop_Eip,offset StopVt;
+		}
+
+	}
+	Vmx_VmCall();// to query VmOff() from Handler System
+				// when it handled ,it ret to
+StopVt:
+	__asm{
+		popfd;
+		popad;
+	}
+
+	g_VMXCPU.bVTStartSuccess = FALSE;
 
 	// ** off the cr4 bit
 	*((PULONG)&uCr4) = Asm_GetCr4();// get cr4；
@@ -295,6 +326,8 @@ NTSTATUS StopVirtualTechnology()
 	ExFreePool(g_VMXCPU.pVMXONRegion);
 	// free VMCSRegion
 	ExFreePool(g_VMXCPU.pVMCSRegion);
+	// free VMCSRegion.pStack
+	ExFreePool(g_VMXCPU.pStack);
 	Log("[MinVT]:正常退出VT。。",0);
 	
 	return  STATUS_SUCCESS;

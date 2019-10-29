@@ -75,6 +75,7 @@
       <Driver>Driver</Driver>
       <EntryPointSymbol>DriverEntry</EntryPointSymbol>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <TreatLinkerWarningAsErrors>false</TreatLinkerWarningAsErrors>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
